@@ -200,37 +200,41 @@ def preprocess_vlm_conversations(
     }
 
     # Note: currently, we assume that each example has only one image
-    for i, image in enumerate(examples["image"]):
-        source = examples["conversations"][i]
-        messages = [{"role": "system", "content": system_prompt}]
-        if not source:
-            # if the source is None, skip it
-            continue
+    for i, convs in enumerate(examples["conversations"]):
+        messages = convs
 
-        if source[0]["role"] != "user":
-            # if the first message is not from user, skip it
-            source = source[1:]
-
-        convroles = ["user", "assistant"]
-        for j, sentence in enumerate(source):
-            role = sentence["role"]
-            assert role == convroles[j % 2], f"unexpected role {role}"
-            if role == "user":
-                # if the message is from user and has image, process the image
-                messages.append(
-                    {
-                        "role": role,
-                        "content": [
-                            {
-                                "type": "image",
-                                "image": image,
-                            },
-                            {"type": "text", "text": sentence["content"]},
-                        ],
-                    }
-                )
-            else:
-                messages.append({"role": role, "content": sentence["content"]})
+    # # Note: currently, we assume that each example has only one image
+    # for i, image in enumerate(examples["image"]):
+    #     source = examples["conversations"][i]
+    #     messages = [{"role": "system", "content": system_prompt}]
+    #     if not source:
+    #         # if the source is None, skip it
+    #         continue
+    #
+    #     if source[0]["role"] != "user":
+    #         # if the first message is not from user, skip it
+    #         source = source[1:]
+    #
+    #     convroles = ["user", "assistant"]
+    #     for j, sentence in enumerate(source):
+    #         role = sentence["role"]
+    #         assert role == convroles[j % 2], f"unexpected role {role}"
+    #         if role == "user":
+    #             # if the message is from user and has image, process the image
+    #             messages.append(
+    #                 {
+    #                     "role": role,
+    #                     "content": [
+    #                         {
+    #                             "type": "image",
+    #                             "image": image,
+    #                         },
+    #                         {"type": "text", "text": sentence["content"]},
+    #                     ],
+    #                 }
+    #             )
+    #         else:
+    #             messages.append({"role": role, "content": sentence["content"]})
 
         conversation = processor.apply_chat_template(
             messages,
@@ -259,7 +263,7 @@ def preprocess_vlm_conversations(
         input_ids = encoding.input_ids[0]
         offsets = encoding.offset_mapping[0]
         pixel_values = encoding.pixel_values
-        image_grid_thw = encoding.image_grid_thw[0]
+        image_grid_thw = encoding.image_grid_thw
 
         # get conversation with image info for loss mask generation
         decoded_conversation = processor.tokenizer.decode(
@@ -275,7 +279,7 @@ def preprocess_vlm_conversations(
         results["loss_mask"].append(loss_mask[None, :])
         results["attention_mask"].append(torch.ones_like(loss_mask)[None, :])
         results["pixel_values"].append(pixel_values)
-        results["image_grid_thw"].append(image_grid_thw[None, :])
+        results["image_grid_thw"].append(image_grid_thw)
     return results
 
 

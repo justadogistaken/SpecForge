@@ -261,29 +261,13 @@ def build_target_model(
         The target model.
     """
     if is_online:
-        if (
-            args.is_vlm
-            and draft_model_config.target_model_type == "qwen2_5_vl"
-            and args.tp_size == 1
-        ):
-            from transformers import Qwen2_5_VLForConditionalGeneration
-
-            target_model = (
-                Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    pretrained_model_name_or_path=args.target_model_path,
-                    torch_dtype=torch.bfloat16,
-                )
-                .eval()
-                .cuda()
-            )
-        else:
-            target_model = get_eagle3_target_model(
+        target_model = get_eagle3_target_model(
                 pretrained_model_name_or_path=args.target_model_path,
                 backend=args.target_model_backend,
                 torch_dtype=torch.bfloat16,
                 device="cuda",
                 cache_dir=args.cache_dir,
-            )
+        )
 
         # set the aux hidden states layers
         if (
@@ -516,29 +500,36 @@ def run_forward(
     target_model: Optional[Eagle3TargetModel] = None,
     is_online: bool = True,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    kwargs = {
+        "input_ids": data["input_ids"].cuda(),
+        "attention_mask": data["attention_mask"].cuda(),
+        "loss_mask": data["loss_mask"].cuda(),
+        "is_vlm": args.is_vlm,
+    }
+
     if args.is_vlm:
-        plosses, _, acces = eagle3_model(
-            input_ids=data["input_ids"].cuda(),
-            attention_mask=data["attention_mask"].cuda(),
-            loss_mask=data["loss_mask"].cuda(),
-            pixel_values=data["pixel_values"].cuda(),
-            image_grid_thw=data["image_grid_thw"].cuda(),
-        )
-    else:
-        if is_online:
+        # plosses, _, acces = eagle3_model(
+        #     input_ids=data["input_ids"].cuda(),
+        #     attention_mask=data["attention_mask"].cuda(),
+        #     loss_mask=data["loss_mask"].cuda(),
+        #     pixel_values=data["pixel_values"].cuda(),
+        #     image_grid_thw=data["image_grid_thw"].cuda(),
+        # )
+        if "pixel_values" in data:
+            kwargs["pixel_values"] = data["pixel_values"].cuda()
+        if "image_grid_thw" in data:
+            kwargs["image_grid_thw"] = data["image_grid_thw"].cuda()
+
+    if is_online:
             # we generate the eagle3 using the target model in an online fashion
-            eagle3_data = target_model.generate_eagle3_data(
-                input_ids=data["input_ids"].cuda(),
-                attention_mask=data["attention_mask"].cuda(),
-                loss_mask=data["loss_mask"].cuda(),
-            )
+            eagle3_data = target_model.generate_eagle3_data(**kwargs)
 
             input_ids = get_dp_data_shard_from_tp(eagle3_data.input_ids)
             attention_mask = get_dp_data_shard_from_tp(eagle3_data.attention_mask)
             loss_mask = get_dp_data_shard_from_tp(eagle3_data.loss_mask)
             target = get_dp_data_shard_from_tp(eagle3_data.target)
             hidden_states = get_dp_data_shard_from_tp(eagle3_data.hidden_states)
-        else:
+    else:
             # we generate the logits using the hidden states loaded from disk
             input_ids = data["input_ids"].cuda()
             attention_mask = data["attention_mask"].cuda()
@@ -549,13 +540,39 @@ def run_forward(
                 input_ids, target, loss_mask
             )
 
-        plosses, _, acces = eagle3_model(
+    position_ids = None
+    if args.is_vlm:
+        attention_mask_tensor = (
+            attention_mask
+            if not isinstance(attention_mask, dict)
+            else attention_mask["full_attention"]
+        )
+
+        if attention_mask_tensor is not None and attention_mask_tensor.ndim == 4:
+            attention_mask_tensor = torch.diagonal(
+                attention_mask_tensor[:, 0], dim1=1, dim2=2
+            )
+            attention_mask_tensor = (
+                attention_mask_tensor / torch.finfo(attention_mask_tensor.dtype).min
+            )
+            attention_mask_tensor = (1.0 - attention_mask_tensor).int()
+
+        position_ids, rope_deltas = target_model.model.get_rope_index(
+            input_ids,
+            kwargs["image_grid_thw"],
+            None,
+            second_per_grid_ts=None,
+            attention_mask=attention_mask_tensor,
+        )
+
+    plosses, _, acces = eagle3_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             loss_mask=loss_mask,
             target=target,
             hidden_states=hidden_states,
-        )
+            position_ids=position_ids,
+    )
     return plosses, acces
 
 
@@ -664,23 +681,11 @@ def main():
     # ================================================
     # 4. Build Eagle3 model
     # ================================================
-    if (
-        args.is_vlm
-        and getattr(draft_model_config, "target_model_type", None) == "qwen2_5_vl"
-    ):
-        eagle3_model = QwenVLOnlineEagle3Model(
-            target_model=target_model,
-            draft_model=draft_model,
-            processor=processor,
-            length=args.ttt_length,
-            attention_backend=args.attention_backend,
-        )
-    else:
-        eagle3_model = OnlineEagle3Model(
+    eagle3_model = OnlineEagle3Model(
             draft_model=draft_model,
             length=args.ttt_length,
             attention_backend=args.attention_backend,
-        )
+    )
 
     eagle3_model = FSDP(
         eagle3_model,
