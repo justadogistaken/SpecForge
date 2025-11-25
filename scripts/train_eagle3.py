@@ -557,13 +557,14 @@ def run_forward(
             )
             attention_mask_tensor = (1.0 - attention_mask_tensor).int()
 
-        position_ids, rope_deltas = target_model.model.get_rope_index(
+        position_ids, rope_deltas = target_model.model.model.get_rope_index(
             input_ids,
             kwargs["image_grid_thw"],
             None,
             second_per_grid_ts=None,
             attention_mask=attention_mask_tensor,
         )
+        target_model.model.model.rope_deltas = rope_deltas
 
     plosses, _, acces = eagle3_model(
             input_ids=input_ids,

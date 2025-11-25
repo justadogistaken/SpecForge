@@ -124,6 +124,29 @@ class GeneralParser(Parser):
 
 class HarmonyParser(Parser):
 
+    def build_prompt(
+        self,
+        messages,
+        reasoning_level: str,
+    ) -> str:
+        prompt_text = f"<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2025-06-28\n\nReasoning: {reasoning_level.lower()}\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|>"
+
+        for i in range(0, len(messages)):
+            msg = messages[i]
+            if msg['role'] == 'system':
+                prompt_text += f"<|start|>system<|message|>{msg['content']}<|end|>"
+            if msg['role'] == 'user':
+                prompt_text += f"<|start|>user<|message|>{msg['content']}<|end|>"
+            if msg['role'] == 'assistant':
+                if 'thinking' in msg and msg['thinking'] is not None:
+                    prompt_text += f"<|start|>assistant<|channel|>analysis<|message|>{msg['thinking']}<|end|>"
+                prompt_text += f"<|start|>assistant<|channel|>final<|message|>{msg['content']}"
+                if i == len(messages) - 1:
+                    prompt_text += "<|return|>"
+                else:
+                    prompt_text += "<|end|>"
+        return prompt_text
+
     def build_single_turn_prompt(
         self,
         user_msg: str,
@@ -149,32 +172,15 @@ class HarmonyParser(Parser):
     def parse(
         self, conversation: "Conversation", max_length: int, preformatted: bool = False
     ) -> List[torch.Tensor]:
-        if not preformatted:
-            user_message = None
-            analysis_message = None
-            commentary_message = None
-            final_message = None
-            reasoning_level = "Low"
+        # if not preformatted:
+        #     user_message = None
+        #     analysis_message = None
+        #     commentary_message = None
+        #     final_message = None
+        reasoning_level = "medium"
 
-            for j, message in enumerate(conversation):
-                if message["role"] == "user":
-                    user_message = message["content"]
-                if message["role"] == "assistant_analysis":
-                    analysis_message = message["content"]
-                elif message["role"] == "assistant_commentary":
-                    commentary_message = message["content"]
-                elif message["role"] == "assistant_final":
-                    final_message = message["content"]
-                elif message["role"] == "assistant_reasoning_effort":
-                    reasoning_level = message["content"]
+        conversation = self.build_prompt(conversation, reasoning_level)
 
-            conversation = self.build_single_turn_prompt(
-                user_message,
-                analysis_message,
-                commentary_message,
-                final_message,
-                reasoning_level,
-            )
 
         if not self.tokenizer.pad_token_id:
             self.tokenizer.pad_token_id = self.tokenizer.unk_token_id
@@ -190,19 +196,27 @@ class HarmonyParser(Parser):
         input_ids = encoding.input_ids[0]
         offsets = encoding.offset_mapping[0]
         loss_mask = torch.zeros(len(input_ids), dtype=torch.long)
-
-        # Find spans of assistant responses using regex
-        response = "<|end|>".join(
-            conversation.split("<|end|><|start|>user<|message|>")[1].split("<|end|>")[
-                1:
-            ]
+        assistant_message_separator = "<|start|>assistant<|channel|>(?:analysis|final)<|message|>"
+        end_separator = "<|end|>"
+        assistant_pattern = (
+            re.escape(assistant_message_separator)
+            + r"(.*?)(?="
+            + re.escape(end_separator)
+            + "|$)"
         )
-        num_response_chars = len(response)
-        num_system_chars = len(conversation) - num_response_chars
 
-        # Mark tokens overlapping with assistant response
-        for idx, (char_start, char_end) in enumerate(offsets):
-            if char_end <= num_system_chars:
-                continue
-            loss_mask[idx] = 1
+        assistant_pattern = r"<\|start\|>assistant<\|channel\|>(?:analysis|final)<\|message\|>(.*?)(?:<\|end\|>|$)"
+
+        for match in re.finditer(assistant_pattern, conversation, re.DOTALL):
+            # Assistant response text span (excluding assistant_header itself)
+            assistant_start_char = match.start(1)
+            assistant_end_char = match.end(1)
+            # Mark tokens overlapping with assistant response
+            for idx, (token_start, token_end) in enumerate(offsets):
+                # Token is part of the assistant response span
+                if token_end <= assistant_start_char:
+                    continue  # token before assistant text
+                if token_start > assistant_end_char:
+                    continue  # token after assistant text
+                loss_mask[idx] = 1
         return input_ids, loss_mask

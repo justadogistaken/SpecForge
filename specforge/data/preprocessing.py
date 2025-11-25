@@ -155,13 +155,21 @@ def preprocess_conversations(
             # if the source is None, skip it
             continue
         input_ids, loss_mask = parser.parse(
-            source, max_length, preformatted=is_preformatted, **kwargs_item
+            source, max_length, preformatted=is_preformatted
         )
         results["input_ids"].append(input_ids[None, :])
         results["loss_mask"].append(loss_mask[None, :])
         results["attention_mask"].append(torch.ones_like(loss_mask)[None, :])
     return results
 
+
+def remove_none_values(obj):
+    if isinstance(obj, dict):
+        return {k: remove_none_values(v) for k, v in obj.items() if v is not None}
+    elif isinstance(obj, list):
+        return [remove_none_values(item) for item in obj]
+    else:
+        return obj
 
 def preprocess_vlm_conversations(
     processor: ImageProcessingMixin,
@@ -201,7 +209,7 @@ def preprocess_vlm_conversations(
 
     # Note: currently, we assume that each example has only one image
     for i, convs in enumerate(examples["conversations"]):
-        messages = convs
+        messages = remove_none_values(convs)
 
     # # Note: currently, we assume that each example has only one image
     # for i, image in enumerate(examples["image"]):

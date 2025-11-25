@@ -118,7 +118,8 @@ class OnlineEagle3Model(Eagle3Model):
             )
             position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
         else:
-            position_ids = position_ids.view(-1, seq_length).long()
+            # position_ids = position_ids.view(-1, seq_length).long()
+            position_ids = position_ids
 
         # Step 4: handle attention mask
         if attention_mask is None:
